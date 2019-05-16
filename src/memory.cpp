@@ -1,8 +1,31 @@
+#include "memory.h"
+
 #include "moduleapi.h"
 #include <libmemsvc.h>
 #include "memhub.h"
 
 memsvc_handle_t memsvc;
+
+std::vector<std::uint32_t> Memory::Read::operator()(std::uint32_t address,
+                                                    std::uint32_t count) const
+{
+    std::vector<std::uint32_t> result(count);
+    if (0 == memhub_read(memsvc, address, count, &result.front())) {
+        return result;
+    } else {
+        throw std::runtime_error(
+            std::string("read memsvc error: ") + memsvc_get_last_error(memsvc));
+    }
+}
+
+void Memory::Write::operator()(std::uint32_t address,
+                               const std::vector<std::uint32_t> &data) const
+{
+    if (0 != memhub_write(memsvc, address, data.size(), &data.front())) {
+        throw std::runtime_error(
+            std::string("write memsvc error: ") + memsvc_get_last_error(memsvc));
+    }
+}
 
 void mread(const RPCMsg *request, RPCMsg *response) {
 	uint32_t count = request->get_word("count");
