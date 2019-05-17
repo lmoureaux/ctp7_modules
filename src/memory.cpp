@@ -64,5 +64,11 @@ extern "C" {
 		}
 		modmgr->register_method("memory", "read", mread);
 		modmgr->register_method("memory", "write", mwrite);
+		modmgr->register_method("memory",
+                                        typeid(Memory::Read).name(),
+                                        RPC::invoke<Memory::Read>);
+		modmgr->register_method("memory",
+                                        typeid(Memory::Write).name(),
+                                        RPC::invoke<Memory::Write>);
 	}
 }
