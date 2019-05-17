@@ -5,12 +5,16 @@
  */
 namespace Memory
 {
+    struct MemoryBase : public RPC::Method
+    {
+        static constexpr char const * module = "memory";
+    };
+
     /**
      * \brief Reads \c count words at the given \c address.
      */
-    struct Read : public RPC::Method
+    struct Read : public MemoryBase
     {
-        static constexpr char * const name = "Read";
         std::vector<std::uint32_t> operator()(std::uint32_t address,
                                               std::uint32_t count) const;
     };
@@ -18,9 +22,8 @@ namespace Memory
     /**
      * \brief Writes \c data at the given \c address.
      */
-    struct Write : public RPC::Method
+    struct Write : public MemoryBase
     {
-        static constexpr char * const name = "Write";
         void operator()(std::uint32_t address,
                         const std::vector<std::uint32_t> &data) const;
     };

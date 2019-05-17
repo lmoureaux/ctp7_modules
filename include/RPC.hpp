@@ -12,6 +12,8 @@
 
 // Remove once backend is implemented
 #include <iostream>
+#include "rpc/wiscrpcsvc.h"
+#include "rpc/wiscRPCMsg.h"
 
 namespace RPC {
 
@@ -203,6 +205,10 @@ namespace RPC {
      */
     class Message
     {
+            union {
+                const wisc::RPCMsg *read;
+                wisc::RPCMsg *write;
+            } _wisc;
 
         protected:
             /*
@@ -214,7 +220,42 @@ namespace RPC {
             // Could write a "key dispenser method" ?
             template<typename T> friend struct Serializer;
 
+            /*
+             * Used by Serializers to fetch keys from the wiscRPCMsg.
+             */
+            template<typename T> T get_key(int index) const;
+
+            /*
+             * Used by Serializers to write keys to the wiscRPCMsg.
+             */
+            void set_key(int index, std::uint32_t value);
+
+            /*
+             * Used by Serializers to write keys to the wiscRPCMsg.
+             */
+            void set_key(int index, const std::vector<std::uint32_t> &value);
+
+            /*
+             * Used by Serializers to write keys to the wiscRPCMsg.
+             */
+            void set_key(int index, const std::string &value);
+
+            /*
+             * Used by Serializers to write keys to the wiscRPCMsg.
+             */
+            void set_key(int index, const std::vector<std::string> &value);
+
         public:
+            /*
+             * Constructor.
+             */
+            explicit Message(const wisc::RPCMsg *read) noexcept : _wisc{read} {}
+
+            /*
+             * Constructor.
+             */
+            explicit Message(wisc::RPCMsg *write) noexcept : _wisc{write} {}
+
             /*
              * Set a single key from a known type.
              */
@@ -290,6 +331,58 @@ namespace RPC {
 
     };
 
+    template<> std::uint32_t Message::get_key<std::uint32_t>(int index) const
+    {
+        return _wisc.read->get_word(std::to_string(index));
+    }
+
+    template<> std::vector<std::uint32_t>
+    Message::get_key<std::vector<std::uint32_t>>(int index) const
+    {
+        return _wisc.read->get_word_array(std::to_string(index));
+    }
+
+    template<> std::string Message::get_key<std::string>(int index) const
+    {
+        return _wisc.read->get_string(std::to_string(index));
+    }
+
+    template<> std::vector<std::string>
+    Message::get_key<std::vector<std::string>>(int index) const
+    {
+        return _wisc.read->get_string_array(std::to_string(index));
+    }
+
+    void Message::set_key(int index, std::uint32_t value)
+    {
+        _wisc.write->set_word(std::to_string(index), value);
+    }
+
+    void Message::set_key(int index, const std::vector<std::uint32_t> &value)
+    {
+        _wisc.write->set_word_array(std::to_string(index), value);
+    }
+
+    void Message::set_key(int index, const std::string &value)
+    {
+        _wisc.write->set_string(std::to_string(index), value);
+    }
+
+    void Message::set_key(int index, const std::vector<std::string> &value)
+    {
+        _wisc.write->set_string_array(std::to_string(index), value);
+    }
+
+    class Connection : public wisc::RPCSvc
+    {
+    public:
+        template<typename Method,
+                typename... Args,
+                typename std::enable_if<std::is_base_of<RPC::Method, Method>::value, int>::type = 0
+                >
+        functor_return_t<Method> call(Args&&... args);
+    };
+
     /*
      * Remotely call a RPC method
      */
@@ -297,18 +390,24 @@ namespace RPC {
              typename... Args,
              typename std::enable_if<std::is_base_of<RPC::Method, Method>::value, int>::type = 0
             >
-    functor_return_t<Method> call(Args&&... args)
+    functor_return_t<Method> Connection::call(Args&&... args)
     {
+        // TODO Handle wisc::RPCMsg and wisc::RPCSvc exceptions (use templates to simplify)
+        // Turn them into more gentle std::exceptions
         std::cout << "Will call : " << Method::name << " (typeid name : " << typeid(Method).name() << " )" << std::endl;
 
         std::cout << "Writing arguments..." << std::endl;
-        Message query{};
+        wisc::RPCMsg request(std::string(Method::module) + "." + typeid(Method).name());
+        Message query{&request};
         query.set(functor_args_t<Method>(std::forward<Args>(args)...));
+
+        std::cout << "Calling..." << std::endl;
+        const wisc::RPCMsg response = call_method(request);
 
         std::cout << "Checking for error key in response..." << std::endl;
 
         std::cout << "Fetching response..." << std::endl;
-        Message reply{};
+        Message reply{&response};
         return reply.get<functor_return_t<Method>>();
     }
 
@@ -318,18 +417,21 @@ namespace RPC {
     template<typename Method,
              typename std::enable_if<std::is_base_of<RPC::Method, Method>::value, int>::type = 0
             >
-    void invoke(Message &&query, Message &&reply) noexcept
+    void invoke(const wisc::RPCMsg *request, wisc::RPCMsg *response) noexcept
     {
         try
         {
             std::cout << "Fetching arguments..." << std::endl;
+            Message query(request);
             auto args = query.get<functor_decay_args_t<Method>>();
 
             std::cout << "Writing response..." << std::endl;
 
+            Message reply(response);
             auto result = tuple_apply<functor_return_t<Method>>(Method{}, args);
             reply.set(result);
         }
+        // TODO Handle wisc::RPCMsg exceptions (use templates to simplify)
         catch (const std::exception &e)
         {
             try
@@ -355,45 +457,49 @@ namespace RPC {
      */
     template<> struct Serializer<uint32_t>
     {
-        static void from(Message &Msg, const uint32_t value)
-        { std::cout << "Setting key (" << Msg._key_idx++ << ") to uint32_t : " << value << std::endl; }
-        static uint32_t to(Message &Msg)
+        static void from(Message &msg, const uint32_t value)
         {
-            std::cout << "Fetching key (" << Msg._key_idx++ << ") as uint32_t" << std::endl;
-            return uint32_t{};
+            msg.set_key(msg._key_idx++, value);
+        }
+        static uint32_t to(Message &msg)
+        {
+            return msg.get_key<std::uint32_t>(msg._key_idx++);
         }
     };
 
     template<> struct Serializer<std::string>
     {
-        static void from(Message &Msg, const std::string &value)
-        { std::cout << "Setting key (" << Msg._key_idx++ << ") to std::string : " << value << std::endl; }
-        static std::string to(Message &Msg)
+        static void from(Message &msg, const std::string &value)
         {
-            std::cout << "Fetching key (" << Msg._key_idx++ << ") as std::string" << std::endl;
-            return std::string{"testArgument"};
+            msg.set_key(msg._key_idx++, value);
+        }
+        static std::string to(Message &msg)
+        {
+            return msg.get_key<std::string>(msg._key_idx++);
         }
     };
 
     template<> struct Serializer<std::vector<uint32_t>>
     {
-        static void from(Message &Msg, const std::vector<uint32_t> &)
-        { std::cout << "Setting key (" << Msg._key_idx++ << ") to std::vector<uint32_t>" << std::endl; }
-        static std::vector<uint32_t> to(Message &Msg)
+        static void from(Message &msg, const std::vector<uint32_t> &value)
         {
-            std::cout << "Fetching key (" << Msg._key_idx++ << ") as std::vector<uint32_t>" << std::endl;
-            return std::vector<uint32_t>{};
+            msg.set_key(msg._key_idx++, value);
+        }
+        static std::vector<uint32_t> to(Message &msg)
+        {
+            return msg.get_key<std::vector<std::uint32_t>>(msg._key_idx++);
         }
     };
 
     template<> struct Serializer<std::vector<std::string>>
     {
-        static void from(Message &Msg, const std::vector<std::string> &)
-        { std::cout << "Setting key (" << Msg._key_idx++ << ") to std::vector<std::string>" << std::endl; }
-        static std::vector<std::string> to(Message &Msg)
+        static void from(Message &msg, const std::vector<std::string> &value)
         {
-            std::cout << "Fetching key (" << Msg._key_idx++ << ") as std::vector<std::string>" << std::endl;
-            return std::vector<std::string>{};
+            msg.set_key(msg._key_idx++, value);
+        }
+        static std::vector<std::string> to(Message &msg)
+        {
+            return msg.get_key<std::vector<std::string>>(msg._key_idx++);
         }
     };
 
