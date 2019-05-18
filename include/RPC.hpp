@@ -10,10 +10,9 @@
 #include <string>
 #include <vector>
 
-// Remove once backend is implemented
-#include <iostream>
 #include "rpc/wiscrpcsvc.h"
 #include "rpc/wiscRPCMsg.h"
+// #include "LogManager.h" FIXME Use only on remote side
 
 namespace RPC {
 
@@ -383,6 +382,93 @@ namespace RPC {
         functor_return_t<Method> call(Args&&... args);
     };
 
+    namespace helpers {
+
+        /*
+        * Returns the error message describing an exception.
+        */
+        template<typename Exception>
+        std::string get_exception_message(const Exception &e) = delete;
+
+        template<>
+        std::string get_exception_message<std::exception>(const std::exception &e)
+        {
+            return e.what();
+        }
+
+        // Never called because the constructor calls abort(). Present in case the
+        // issue is corrected in the future.
+        template<>
+        std::string get_exception_message<wisc::RPCMsg::BadKeyException>(
+            const wisc::RPCMsg::BadKeyException &e)
+        {
+            return "bad RPC key " + e.key;
+        }
+
+        template<>
+        std::string get_exception_message<wisc::RPCMsg::TypeException>(
+            const wisc::RPCMsg::TypeException &e)
+        {
+            return "RPC type error";
+        }
+
+        template<>
+        std::string get_exception_message<wisc::RPCMsg::BufferTooSmallException>(
+            const wisc::RPCMsg::BufferTooSmallException &e)
+        {
+            return "RPC buffer too small";
+        }
+
+        template<>
+        std::string get_exception_message<wisc::RPCMsg::CorruptMessageException>(
+            const wisc::RPCMsg::CorruptMessageException &e)
+        {
+            return "corrupt RPC message: " + e.reason;
+        }
+
+        /*
+         * Handles an exception, setting the error key on the response.
+         *
+         * In case an exception occurs when setting the error key,
+         * std::terminate is called.
+         */
+        template<typename Exception>
+        void handle_exception(const Exception &e, wisc::RPCMsg *response) noexcept
+        {
+//          LOGGER->log_message(
+//             LogManager::ERROR,
+//             "Caught exception: " + get_exception_message(e));
+            response->set_string("error", get_exception_message(e));
+        }
+
+        /*
+         * Handles an unknown exception, setting the error key on the response.
+         *
+         * In case an exception occurs when setting the error key,
+         * std::terminate is called.
+         */
+        void handle_exception(wisc::RPCMsg *response) noexcept
+        {
+//          LOGGER->log_message(LogManager::ERROR, "Caught unknown exception");
+            response->set_string("error", "caught unknown exception");
+        }
+
+    } // namespace helpers
+
+    /*
+     * Thrown by call when the remote call fails.
+     */
+    class RemoteException : public std::runtime_error
+    {
+    public:
+        /*
+         * Constructor.
+         */
+        explicit RemoteException(const std::string &message):
+            std::runtime_error(message)
+        {}
+    };
+
     /*
      * Remotely call a RPC method
      */
@@ -392,21 +478,16 @@ namespace RPC {
             >
     functor_return_t<Method> Connection::call(Args&&... args)
     {
-        // TODO Handle wisc::RPCMsg and wisc::RPCSvc exceptions (use templates to simplify)
-        // Turn them into more gentle std::exceptions
-        std::cout << "Will call : " << Method::name << " (typeid name : " << typeid(Method).name() << " )" << std::endl;
-
-        std::cout << "Writing arguments..." << std::endl;
         wisc::RPCMsg request(std::string(Method::module) + "." + typeid(Method).name());
         Message query{&request};
         query.set(functor_args_t<Method>(std::forward<Args>(args)...));
 
-        std::cout << "Calling..." << std::endl;
         const wisc::RPCMsg response = call_method(request);
 
-        std::cout << "Checking for error key in response..." << std::endl;
+        if (response.get_key_exists("error")) {
+            throw RemoteException("remote error: " + response.get_string("error"));
+        }
 
-        std::cout << "Fetching response..." << std::endl;
         Message reply{&response};
         return reply.get<functor_return_t<Method>>();
     }
@@ -421,33 +502,36 @@ namespace RPC {
     {
         try
         {
-            std::cout << "Fetching arguments..." << std::endl;
             Message query(request);
             auto args = query.get<functor_decay_args_t<Method>>();
-
-            std::cout << "Writing response..." << std::endl;
 
             Message reply(response);
             auto result = tuple_apply<functor_return_t<Method>>(Method{}, args);
             reply.set(result);
         }
-        // TODO Handle wisc::RPCMsg exceptions (use templates to simplify)
-        catch (const std::exception &e)
+        catch(const std::exception &e)
         {
-            try
-            {
-                std::cout << "Exception caught! Set key (error) to " << e.what() << std::endl;
-            }
-            catch (const std::exception &e)
-            {
-                // If an exception occurs while we are trying to return the exception to the caller,
-                // the best we can do is logging the exception message and terminate the server.
-                // The client will see the client disconnected.
-                std::cout << "Cannot send back the error message to the caller." << std::endl;
-                std::cout << "The error message is : " << e.what() << std::endl;
-                std::cout << "Terminating the server..." << std::endl;
-                std::exit(1);
-            }
+            helpers::handle_exception(e, response);
+        }
+        catch(const wisc::RPCMsg::BadKeyException &e)
+        {
+            helpers::handle_exception(e, response);
+        }
+        catch(const wisc::RPCMsg::TypeException &e)
+        {
+            helpers::handle_exception(e, response);
+        }
+        catch(const wisc::RPCMsg::BufferTooSmallException &e)
+        {
+            helpers::handle_exception(e, response);
+        }
+        catch(const wisc::RPCMsg::CorruptMessageException &e)
+        {
+            helpers::handle_exception(e, response);
+        }
+        catch(...)
+        {
+            helpers::handle_exception(response);
         }
     }
 
