@@ -2,6 +2,7 @@
 #define RPC_HPP
 
 #include <memory>
+#include <sstream>
 #include <type_traits>
 #include <utility>
 #include <tuple>
@@ -16,7 +17,39 @@
 #include "rpc/wiscRPCMsg.h"
 // #include "LogManager.h" FIXME Use only on remote side
 
-#include <execinfo.h> // Backtrace
+#include "backward.hpp"
+#include "cxxabi.h" // C++ ABI, used for exceptions
+
+thread_local std::unique_ptr<backward::StackTrace> global_trace = nullptr;
+
+[[noreturn]]
+static void __cxa_throw(void *thrown_exception,
+                        void *pvtinfo,
+                        void (*dest)(void *))
+{
+    // Drop previous trace
+    global_trace.reset();
+
+    try
+    {
+        using namespace backward;
+        global_trace.reset(new backward::StackTrace);
+        global_trace->load_here(32);
+    }
+    catch(...)
+    {
+        // Stack trace isn't critical
+    }
+
+    // Call real __cxa_throw
+    static typeof(&__cxa_throw) real_cxa_throw = nullptr;
+    if (__builtin_expect(real_cxa_throw == nullptr, 0)) {
+        real_cxa_throw = (typeof(&__cxa_throw)) dlsym(RTLD_NEXT, "__cxa_throw");
+    }
+    real_cxa_throw(thrown_exception, pvtinfo, dest);
+
+    __builtin_unreachable();
+}
 
 namespace RPC {
 
@@ -431,32 +464,46 @@ namespace RPC {
         }
 
         /*
+         * Sets the type of the current exception in response
+         */
+        void set_exception_type(wisc::RPCMsg *response) noexcept
+        {
+            const std::type_info *exception_type =
+                abi::__cxa_current_exception_type();
+            if (exception_type != nullptr) {
+                char *demangled = abi::__cxa_demangle(
+                    exception_type->name(), nullptr, nullptr, nullptr);
+                if (demangled != nullptr) {
+                    response->set_string("type", demangled);
+                    std::free(demangled);
+                } else {
+                    response->set_string("type", exception_type->name());
+                }
+            }
+        }
+
+        /*
          * Sets the backtrace for the current exception in response
          */
         void set_backtrace(wisc::RPCMsg *response) noexcept
         {
-            try
-            {
-                // Max 30 functions
-                std::vector<void *> trace(30);
-                int size = backtrace(&trace.front(), 30);
+            if (global_trace != nullptr) {
+                try
+                {
+                    // Get trace
+                    std::stringstream ss;
+                    backward::Printer p;
+                    p.print(*global_trace, ss);
 
-                // Fetch data
-                std::unique_ptr<char *> symbols;
-                symbols.reset(backtrace_symbols(&trace.front(), size));
-                if (symbols == nullptr) {
-                    return; // Never fail
+                    // Send to caller
+                    response->set_string("backtrace", ss.str());
                 }
-
-                // Send to caller
-                std::vector<std::string> bt(symbols.get(), symbols.get() + size);
-                response->set_string_array("backtrace", bt);
-            }
-            catch (...)
-            {
-//                 LOGGER->log_message(
-//                     LogManager::ALERT,
-//                     "Could not deduce backtrace. Is memory full?");
+                catch (...)
+                {
+    //                 LOGGER->log_message(
+    //                     LogManager::ALERT,
+    //                     "Could not deduce backtrace. Is memory full?");
+                }
             }
         }
 
@@ -473,6 +520,8 @@ namespace RPC {
 //             LogManager::ERROR,
 //             "Caught exception: " + get_exception_message(e));
             response->set_string("error", get_exception_message(e));
+
+            set_exception_type(response);
             set_backtrace(response);
         }
 
@@ -485,7 +534,9 @@ namespace RPC {
         void handle_exception(wisc::RPCMsg *response) noexcept
         {
 //          LOGGER->log_message(LogManager::ERROR, "Caught unknown exception");
-            response->set_string("error", "caught unknown exception");
+            response->set_string("error", "(exception type not supported)");
+
+            set_exception_type(response);
             set_backtrace(response);
         }
 
@@ -497,20 +548,36 @@ namespace RPC {
     class RemoteException : public std::runtime_error
     {
         bool _has_backtrace = false;
-        std::vector<std::string> _backtrace;
+        bool _has_type = false;
+        std::string _backtrace;
+        std::string _type;
 
     public:
         /*
          * Constructor.
          */
         explicit RemoteException(const wisc::RPCMsg &response):
-            std::runtime_error("remote error: " + response.get_string("error"))
-        {
-            _has_backtrace = response.get_key_exists("backtrace");
-            if (_has_backtrace) {
-                _backtrace = response.get_string_array("backtrace");
-            }
-        }
+            std::runtime_error(
+                "remote error: "
+                + (response.get_key_exists("type")
+                    ? response.get_string("type") + ": "
+                    : "")
+                + response.get_string("error")),
+            _has_backtrace(response.get_key_exists("backtrace")),
+            _has_type(response.get_key_exists("type")),
+            _backtrace(_has_backtrace ? response.get_string("backtrace") : ""),
+            _type(_has_type ? response.get_string("type") : "")
+        {}
+
+        /*
+         * Returns true if the type of the exception is available.
+         */
+        bool has_type() const { return _has_type; }
+
+        /*
+         * Returns the backtrace if available, the empty string otherwise.
+         */
+        std::string type() const { return _type; }
 
         /*
          * Returns true if a backtrace is available.
@@ -520,7 +587,7 @@ namespace RPC {
         /*
          * Returns the backtrace if available, the empty string otherwise.
          */
-        std::vector<std::string> backtrace() const { return _backtrace; }
+        std::string backtrace() const { return _backtrace; }
     };
 
     /*

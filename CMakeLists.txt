@@ -11,8 +11,11 @@ function(add_module NAME)
   add_library(${NAME} SHARED src/${NAME})
   target_link_libraries(${NAME} PRIVATE memhub ${ARGS_DEPS} ${ARGS_LIBS})
 
-  # Remove the `lib` prefix
-  set_target_properties(${NAME} PROPERTIES PREFIX "")
+  set_target_properties(${NAME} PROPERTIES
+    PREFIX ""
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/module_version_script.ld"
+    LINK_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/module_version_script.ld")
+
 
   install(TARGETS ${NAME} LIBRARY DESTINATION /mnt/persistent/rpcmodules)
   set_target_properties(${NAME} PROPERTIES INSTALL_RPATH /mnt/persistent/rpcmodules)
