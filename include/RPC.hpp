@@ -1,6 +1,7 @@
 #ifndef RPC_HPP
 #define RPC_HPP
 
+#include <memory>
 #include <type_traits>
 #include <utility>
 #include <tuple>
@@ -13,6 +14,8 @@
 #include "rpc/wiscrpcsvc.h"
 #include "rpc/wiscRPCMsg.h"
 // #include "LogManager.h" FIXME Use only on remote side
+
+#include <execinfo.h> // Backtrace
 
 namespace RPC {
 
@@ -427,6 +430,36 @@ namespace RPC {
         }
 
         /*
+         * Sets the backtrace for the current exception in response
+         */
+        void set_backtrace(wisc::RPCMsg *response) noexcept
+        {
+            try
+            {
+                // Max 30 functions
+                std::vector<void *> trace(30);
+                int size = backtrace(&trace.front(), 30);
+
+                // Fetch data
+                std::unique_ptr<char *> symbols;
+                symbols.reset(backtrace_symbols(&trace.front(), size));
+                if (symbols == nullptr) {
+                    return; // Never fail
+                }
+
+                // Send to caller
+                std::vector<std::string> bt(symbols.get(), symbols.get() + size);
+                response->set_string_array("backtrace", bt);
+            }
+            catch (...)
+            {
+//                 LOGGER->log_message(
+//                     LogManager::ALERT,
+//                     "Could not deduce backtrace. Is memory full?");
+            }
+        }
+
+        /*
          * Handles an exception, setting the error key on the response.
          *
          * In case an exception occurs when setting the error key,
@@ -439,6 +472,7 @@ namespace RPC {
 //             LogManager::ERROR,
 //             "Caught exception: " + get_exception_message(e));
             response->set_string("error", get_exception_message(e));
+            set_backtrace(response);
         }
 
         /*
@@ -451,6 +485,7 @@ namespace RPC {
         {
 //          LOGGER->log_message(LogManager::ERROR, "Caught unknown exception");
             response->set_string("error", "caught unknown exception");
+            set_backtrace(response);
         }
 
     } // namespace helpers
@@ -460,13 +495,31 @@ namespace RPC {
      */
     class RemoteException : public std::runtime_error
     {
+        bool _has_backtrace = false;
+        std::vector<std::string> _backtrace;
+
     public:
         /*
          * Constructor.
          */
-        explicit RemoteException(const std::string &message):
-            std::runtime_error(message)
-        {}
+        explicit RemoteException(const wisc::RPCMsg &response):
+            std::runtime_error("remote error: " + response.get_string("error"))
+        {
+            _has_backtrace = response.get_key_exists("backtrace");
+            if (_has_backtrace) {
+                _backtrace = response.get_string_array("backtrace");
+            }
+        }
+
+        /*
+         * Returns true if a backtrace is available.
+         */
+        bool has_backtrace() const { return _has_backtrace; }
+
+        /*
+         * Returns the backtrace if available, the empty string otherwise.
+         */
+        std::vector<std::string> backtrace() const { return _backtrace; }
     };
 
     /*
@@ -485,7 +538,7 @@ namespace RPC {
         const wisc::RPCMsg response = call_method(request);
 
         if (response.get_key_exists("error")) {
-            throw RemoteException("remote error: " + response.get_string("error"));
+            throw RemoteException(response);
         }
 
         Message reply{&response};
