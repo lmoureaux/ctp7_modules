@@ -523,7 +523,26 @@ namespace RPC {
     };
 
     /*
+     * Rethrown by call when RPCMsg throws.
+     */
+    class MessageException : public std::runtime_error
+    {
+    public:
+        /*
+         * Constructor.
+         */
+        explicit MessageException(const std::string &message):
+            std::runtime_error(message)
+        {}
+    };
+
+    /*
      * Remotely call a RPC method
+     *
+     * \throws RemoteException if the remote call fails
+     * \throws MessageException if an RPC message cannot be built/parsed
+     * \throws wisc::RPCSvc::RPCException in case of connection problems
+     * \throws std::exception thrown by the standard library
      */
     template<typename Method,
              typename... Args,
@@ -531,18 +550,42 @@ namespace RPC {
             >
     functor_return_t<Method> Connection::call(Args&&... args)
     {
-        wisc::RPCMsg request(std::string(Method::module) + "." + typeid(Method).name());
-        Message query{&request};
-        query.set(functor_args_t<Method>(std::forward<Args>(args)...));
+        try
+        {
+            // Create request
+            wisc::RPCMsg request(
+                std::string(Method::module) + "." + typeid(Method).name());
+            Message query{&request};
+            query.set(functor_args_t<Method>(std::forward<Args>(args)...));
 
-        const wisc::RPCMsg response = call_method(request);
+            // Remote call
+            const wisc::RPCMsg response = call_method(request);
 
-        if (response.get_key_exists("error")) {
-            throw RemoteException(response);
+            // Check errors
+            if (response.get_key_exists("error")) {
+                throw RemoteException(response);
+            }
+
+            // Parse reply
+            Message reply{&response};
+            return reply.get<functor_return_t<Method>>();
         }
-
-        Message reply{&response};
-        return reply.get<functor_return_t<Method>>();
+        catch(const wisc::RPCMsg::BadKeyException &e)
+        {
+            throw MessageException(helpers::get_exception_message(e));
+        }
+        catch(const wisc::RPCMsg::TypeException &e)
+        {
+            throw MessageException(helpers::get_exception_message(e));
+        }
+        catch(const wisc::RPCMsg::BufferTooSmallException &e)
+        {
+            throw MessageException(helpers::get_exception_message(e));
+        }
+        catch(const wisc::RPCMsg::CorruptMessageException &e)
+        {
+            throw MessageException(helpers::get_exception_message(e));
+        }
     }
 
     /*
