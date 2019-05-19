@@ -5,6 +5,7 @@
 #include <type_traits>
 #include <utility>
 #include <tuple>
+#include <typeinfo>
 
 // Supported types
 #include <cstdint>
@@ -323,8 +324,8 @@ namespace RPC {
             template<typename Tuple, std::size_t... I>
             Tuple get(index_sequence<I...>)
             {
-                // Initializer lists are always evaluated from left to right
-                return {
+                // Initializer-lists are always evaluated from left to right
+                return Tuple{
                     Serializer<typename std::decay<
                         typename std::tuple_element<I, Tuple>::type>
                     ::type>::to(*this)...
@@ -546,7 +547,7 @@ namespace RPC {
      */
     template<typename Method,
              typename... Args,
-             typename std::enable_if<std::is_base_of<RPC::Method, Method>::value, int>::type = 0
+             typename std::enable_if<std::is_base_of<RPC::Method, Method>::value, int>::type
             >
     functor_return_t<Method> Connection::call(Args&&... args)
     {
