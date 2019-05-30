@@ -62,6 +62,9 @@ static void __cxa_throw(void *thrown_exception,
     __builtin_unreachable();
 }
 
+/**
+ * \brief Helpers for type-safe remote calls over \c rpcsvc
+ */
 namespace RPC {
 
     /*
@@ -233,10 +236,37 @@ namespace RPC {
     // Forward reference
     class Message;
 
+    /**
+     * \brief Template used to serialize arguments and return values of RPC
+     *        calls.
+     *
+     * By default, this class is specialized for the following types:
+     *
+     *  * \c std::uint32_t
+     *  * \c std::string
+     *  * \c std::vector<std::uint32_t>
+     *  * \c std::vector<std::string>
+     *
+     * Custom types can be supported by defining the corresponding
+     * specializations.
+     *
+     * \tparam T The type to serialize.
+     */
     template<typename T>
     struct Serializer
     {
+        /**
+         * \brief Stores a value in the given message.
+         *
+         * Must be overridden in specializations.
+         */
         static void from(Message &, T) = delete;
+
+        /**
+         * \brief Retrieves a value from the given message.
+         *
+         * Must be overridden in specializations.
+         */
         static T to(Message &) = delete;
     };
 
@@ -432,9 +462,9 @@ namespace RPC {
 
     namespace helpers {
 
-        /*
-        * Returns the error message describing an exception.
-        */
+        /**
+         * \brief Returns the error message describing an exception.
+         */
         template<typename Exception>
         std::string get_exception_message(const Exception &e) = delete;
 
@@ -444,8 +474,8 @@ namespace RPC {
             return e.what();
         }
 
-        // Never called because the constructor calls abort(). Present in case the
-        // issue is corrected in the future.
+        // Never called because the constructor calls abort(). Present in case
+        // this issue is corrected in the future.
         template<>
         std::string get_exception_message<wisc::RPCMsg::BadKeyException>(
             const wisc::RPCMsg::BadKeyException &e)
@@ -474,27 +504,31 @@ namespace RPC {
             return "corrupt RPC message: " + e.reason;
         }
 
-        /*
-         * Sets the type of the current exception in response
+        /**
+         * \brief Sets the type of the current exception in \c response
          */
         void set_exception_type(wisc::RPCMsg *response) noexcept
         {
+            // Fetch the type from the C++ ABI
             const std::type_info *exception_type =
                 abi::__cxa_current_exception_type();
+
             if (exception_type != nullptr) {
+                // Try to demangle it
                 char *demangled = abi::__cxa_demangle(
                     exception_type->name(), nullptr, nullptr, nullptr);
                 if (demangled != nullptr) {
                     response->set_string("type", demangled);
                     std::free(demangled);
                 } else {
+                    // The mangled name is better than nothing
                     response->set_string("type", exception_type->name());
                 }
             }
         }
 
-        /*
-         * Sets the backtrace for the current exception in response
+        /**
+         * \brief Sets the backtrace for the current exception in response
          */
         void set_backtrace(wisc::RPCMsg *response) noexcept
         {
@@ -518,11 +552,14 @@ namespace RPC {
             }
         }
 
-        /*
-         * Handles an exception, setting the error key on the response.
+        /**
+         * \brief Handles an exception, setting the error key on the response.
          *
-         * In case an exception occurs when setting the error key,
-         * std::terminate is called.
+         * The content of the error key is the string returned by
+         * \ref get_exception_message. In case an exception occurs when setting
+         * the error key the program is terminated.
+         *
+         * \tparam Exception The type of exception to handle
          */
         template<typename Exception>
         void handle_exception(const Exception &e, wisc::RPCMsg *response) noexcept
@@ -536,11 +573,12 @@ namespace RPC {
             set_backtrace(response);
         }
 
-        /*
-         * Handles an unknown exception, setting the error key on the response.
+        /**
+         * \brief Handles an unknown exception, setting the error key on the
+         *        response.
          *
-         * In case an exception occurs when setting the error key,
-         * std::terminate is called.
+         * In case an exception occurs when setting the error key, the program
+         * is terminated.
          */
         void handle_exception(wisc::RPCMsg *response) noexcept
         {
@@ -553,8 +591,8 @@ namespace RPC {
 
     } // namespace helpers
 
-    /*
-     * Thrown by call when the remote call fails.
+    /**
+     * \brief Thrown by \ref Connection::call when a remote call fails.
      */
     class RemoteException : public std::runtime_error
     {
@@ -595,29 +633,30 @@ namespace RPC {
             _type(_has_type ? response.get_string("type") : "")
         {}
 
-        /*
-         * Returns true if the type of the exception is available.
+        /**
+         * \brief Returns true if the type of the remote exception is available.
          */
         bool has_type() const { return _has_type; }
 
-        /*
-         * Returns the backtrace if available, the empty string otherwise.
+        /**
+         * \brief Returns the type of the remote exception if available, an
+         *        empty string otherwise.
          */
         std::string type() const { return _type; }
 
-        /*
-         * Returns true if a backtrace is available.
+        /**
+         * \brief Returns true if a backtrace is available.
          */
         bool has_backtrace() const { return _has_backtrace; }
 
-        /*
-         * Returns the backtrace if available, the empty string otherwise.
+        /**
+         * \brief Returns the backtrace if available, an empty string otherwise.
          */
         std::string backtrace() const { return _backtrace; }
     };
 
-    /*
-     * Rethrown by call when RPCMsg throws.
+    /**
+     * \brief Rethrown by \ref call when \c RPCMsg throws.
      */
     class MessageException : public std::runtime_error
     {
@@ -630,8 +669,8 @@ namespace RPC {
         {}
     };
 
-    /*
-     * Remotely call a RPC method
+    /**
+     * \brief Remotely call a RPC method
      *
      * \throws RemoteException if the remote call fails
      * \throws MessageException if an RPC message cannot be built/parsed
