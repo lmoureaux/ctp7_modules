@@ -564,8 +564,23 @@ namespace RPC {
         std::string _type;
 
     public:
-        /*
-         * Constructor.
+        /**
+         * \brief Constructor for \c rpcsvc errors.
+         *
+         * Uses the provided error message.
+         */
+        explicit RemoteException(const std::string &message):
+            std::runtime_error("rpcsvc error: " + message),
+            _has_backtrace(false),
+            _has_type(false),
+            _backtrace(""),
+            _type("")
+        {}
+
+        /**
+         * \brief Constructor for GEM errors.
+         *
+         * Uses information in the \c response to build the error message.
          */
         explicit RemoteException(const wisc::RPCMsg &response):
             std::runtime_error(
@@ -641,7 +656,12 @@ namespace RPC {
             const wisc::RPCMsg response = call_method(request);
 
             // Check errors
+            if (response.get_key_exists("rpcerror")) {
+                // Built-in error
+                throw RemoteException(response.get_string("rpcerror"));
+            }
             if (response.get_key_exists("error")) {
+                // GEM error
                 throw RemoteException(response);
             }
 
