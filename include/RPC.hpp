@@ -22,6 +22,13 @@
 
 thread_local std::unique_ptr<backward::StackTrace> global_trace = nullptr;
 
+/**
+ * \brief Records the stack and forwards to \c __cxa_throw from \c libstdc++.
+ *
+ * This function overrides \c __cxa_throw from the C++ ABI, which gets called
+ * from \c throw expressions. It records the stack trace and calls the original
+ * \c __cxa_throw.
+ */
 [[noreturn]]
 static void __cxa_throw(void *thrown_exception,
                         void *pvtinfo,
@@ -30,6 +37,7 @@ static void __cxa_throw(void *thrown_exception,
     // Drop previous trace
     global_trace.reset();
 
+    // Load new trace
     try
     {
         using namespace backward;
@@ -44,10 +52,13 @@ static void __cxa_throw(void *thrown_exception,
     // Call real __cxa_throw
     static typeof(&__cxa_throw) real_cxa_throw = nullptr;
     if (__builtin_expect(real_cxa_throw == nullptr, 0)) {
+        // Load it if not already present
         real_cxa_throw = (typeof(&__cxa_throw)) dlsym(RTLD_NEXT, "__cxa_throw");
     }
     real_cxa_throw(thrown_exception, pvtinfo, dest);
 
+    // __cxa_throw is [[noreturn]] so tell the compiler that we won't reach this
+    // line
     __builtin_unreachable();
 }
 
